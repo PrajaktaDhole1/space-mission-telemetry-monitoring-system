@@ -1,80 +1,109 @@
-#include "common.h"   
+#include "common.h" 
+#include <errno.h> 
+/*
+   Main function of Telemetry Receiver
 
-int main() {
+   This process:
+   - Receives telemetry data from satellites via pipe
+   - Updates shared memory with latest data
+   - Uses semaphore for synchronization
+*/
+int main(int argc, char* argv[]) {
 
     /*
-       Access existing shared memory created by Mission Commander.
-       This shared memory stores telemetry data of all satellites.
+       Check if pipe file descriptor is passed
+    */
+    if(argc < 2) {
+        printf("Usage: %s <pipe_fd>\n", argv[0]);
+        exit(1);
+    }
+
+    /*
+       Get pipe read file descriptor from command line
+       (passed by Mission Commander)
+    */
+    int pipe_fd = atoi(argv[1]);
+
+    /*
+       Access existing shared memory
+       (created by Mission Commander)
     */
     int shmid = shmget(SHM_KEY, sizeof(mission_state_t), 0666);
+    if(shmid < 0) {
+        perror("shmget failed");
+        exit(1);
+    }
 
     /*
-       Access the semaphore used for synchronization.
-       Semaphore ensures that only one process updates shared memory at a time.
+       Access semaphore used for synchronization
     */
     int semid = semget(SEM_KEY, 1, 0666);
+    if(semid < 0) {
+        perror("semget failed");
+        exit(1);
+    }
 
     /*
-       Attach shared memory to this process.
-       After attaching, 'state' points to shared memory where telemetry is stored.
+       Attach shared memory to this process
+       'state' now points to shared memory
     */
     mission_state_t *state = shmat(shmid, NULL, 0);
+    if(state == (void*)-1) {
+        perror("shmat failed");
+        exit(1);
+    }
 
     /*
-       Create a pipe for receiving telemetry data from satellite processes.
-       pipefd[0] -> read end
-       pipefd[1] -> write end
-    */
-    int pipefd[2];
-    pipe(pipefd);
-
-    /*
-       Structure to temporarily store telemetry received from satellites.
+       Structure to temporarily store incoming telemetry data
     */
     telemetry_t data;
 
     /*
-       Infinite loop to continuously receive telemetry data.
+       Infinite loop to continuously receive and update data
     */
     while(1) {
 
         /*
-           Read telemetry data from pipe.
-           Satellite processes write telemetry data to this pipe.
+           Read telemetry data from pipe
+
+           pipe_fd → read end of pipe
+           &data   → buffer to store received data
         */
-        read(pipefd[0], &data, sizeof(data));
+        int n = read(pipe_fd, &data, sizeof(data));
 
         /*
-           Semaphore operations for synchronization
+           If valid data received
         */
+        if(n == sizeof(data)) {
 
-        /*
-           Lock operation (P operation)
-           Decrease semaphore value by 1.
-           If semaphore is 0, process will wait.
-        */
-        struct sembuf lock = {0, -1, 0};
+            /*
+               Semaphore operations for synchronization
 
-        /*
-           Unlock operation (V operation)
-           Increase semaphore value by 1.
-        */
-        struct sembuf unlock = {0, 1, 0};
+               lock   → decrease semaphore (enter critical section)
+               unlock → increase semaphore (exit critical section)
+            */
+            struct sembuf lock = {0, -1, 0};
+            struct sembuf unlock = {0, 1, 0};
 
-        /*
-           Enter critical section
-        */
-        semop(semid, &lock, 1);
+            /*
+               Enter critical section
+               Ensures only one process modifies shared memory
+            */
+            semop(semid, &lock, 1);
 
-        /*
-           Update shared memory with latest telemetry
-           Store satellite data in its corresponding index
-        */
-        state->satellites[data.sat_id - 1] = data;
+            /*
+               Update shared memory with latest telemetry
 
-        /*
-           Exit critical section
-        */
-        semop(semid, &unlock, 1);
+               data.sat_id - 1 → index of satellite
+            */
+            state->satellites[data.sat_id - 1] = data;
+
+            /*
+               Exit critical section
+            */
+            semop(semid, &unlock, 1);
+        }
     }
+
+    return 0;
 }
