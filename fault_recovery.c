@@ -1,47 +1,89 @@
-#include "common.h"   // Includes common structures, IPC keys, and required libraries
+#include "common.h"
+#include <errno.h>    
 
+/*
+   Main function of Fault Recovery process
+
+   This process:
+   - Receives anomaly alerts from Orbit Analyzer (via message queue)
+   - Displays recovery message
+   - Sends alert data to Recorder via FIFO
+   - Notifies Mission Commander using signal
+*/
 int main() {
 
     /*
-       Access the existing message queue created by Mission Commander.
-       This queue is used to receive alert messages from Orbit Analyzer.
+       Access existing message queue
+       (created by Mission Commander)
     */
     int msgid = msgget(MSG_KEY, 0666);
+    if(msgid < 0) {
+        perror("msgget failed");
+        exit(1);
+    }
 
     /*
-       Structure to store the received alert message
+       Structure to store received alert message
     */
     alert_msg_t alert;
 
     /*
-       Infinite loop to continuously listen for alerts
+       Open FIFO (named pipe) for writing
+
+       This FIFO sends alert data to Recorder process
+    */
+    int fifo_fd = open(FIFO_NAME, O_WRONLY);
+    if(fifo_fd < 0) {
+        perror("FIFO open failed");
+        exit(1);
+    }
+
+    /*
+       Infinite loop to continuously handle alerts
     */
     while(1) {
 
         /*
-           Receive alert message from the message queue.
+           Receive alert message from message queue
 
            msgid  → message queue ID
-           &alert → structure where message will be stored
+           &alert → buffer to store message
            sizeof(alert.msg_text) → size of message data
-           1 → receive messages of type 1
-           0 → blocking call (wait until message arrives)
+           1 → receive only messages of type 1
+           0 → blocking mode (wait until message arrives)
         */
-        msgrcv(msgid, &alert, sizeof(alert.msg_text), 1, 0);
+        if(msgrcv(msgid, &alert, sizeof(alert.msg_text), 1, 0) < 0) {
+            perror("msgrcv failed");
+            continue;
+        }
 
         /*
-           Print recovery message on terminal
-           Example: "Recovery: Battery low in Satellite 1"
+           Display recovery message on terminal
         */
         printf("Recovery: %s\n", alert.msg_text);
 
         /*
-           Send signal to parent process (Mission Commander)
-           indicating that an anomaly was detected.
+           Send alert message to Recorder via FIFO
 
-           getppid() returns parent process ID.
-           SIGUSR1 is used as custom alert signal.
+           This will be logged into mission_log.txt
+        */
+        if(write(fifo_fd, alert.msg_text, strlen(alert.msg_text)) < 0) {
+            perror("FIFO write failed");
+        }
+
+        /*
+           Add newline for better readability in log file
+        */
+        write(fifo_fd, "\n", 1);
+
+        /*
+           Send signal to Mission Commander
+
+           getppid() → parent process ID
+           SIGUSR1 → indicates anomaly detected
         */
         kill(getppid(), SIGUSR1);
     }
+
+    return 0;
 }
