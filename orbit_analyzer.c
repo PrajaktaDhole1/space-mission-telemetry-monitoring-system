@@ -1,51 +1,77 @@
-#include "common.h"   
+#include "common.h"
+#include <errno.h>    
 
+/*
+   Main function of Orbit Analyzer
+
+   This process:
+   - Reads telemetry data from shared memory
+   - Detects anomalies (low battery)
+   - Sends alerts to Fault Recovery via message queue
+*/
 int main() {
 
     /*
-       Access the shared memory segment created by the Mission Commander.
-       This shared memory contains telemetry data of all satellites.
+       Access existing shared memory
+       (created by Mission Commander)
     */
     int shmid = shmget(SHM_KEY, sizeof(mission_state_t), 0666);
+    if(shmid < 0) {
+        perror("shmget failed");
+        exit(1);
+    }
 
     /*
-       Access the message queue used for sending alerts.
-       This queue will send anomaly alerts to the Fault Recovery process.
+       Access message queue used to send alerts
     */
     int msgid = msgget(MSG_KEY, 0666);
+    if(msgid < 0) {
+        perror("msgget failed");
+        exit(1);
+    }
 
     /*
-       Attach the shared memory to this process.
-       'state' now points to the shared memory region.
+       Attach shared memory to this process
+       'state' now points to telemetry data
     */
     mission_state_t *state = shmat(shmid, NULL, 0);
+    if(state == (void*)-1) {
+        perror("shmat failed");
+        exit(1);
+    }
 
     /*
-       Structure used to send alert messages through message queue
+       Structure used to send alert messages
     */
     alert_msg_t alert;
 
     /*
-       Infinite loop to continuously monitor satellite telemetry data
+       Array to track whether alert already sent
+       (prevents repeated alerts for same issue)
+    */
+    int alert_sent[MAX_SAT] = {0};
+
+    /*
+       Infinite loop to continuously monitor telemetry
     */
     while(1) {
 
         /*
-           Wait for 3 seconds before checking telemetry again.
-           This prevents CPU overuse and repeated alerts too quickly.
+           Wait for 3 seconds before next check
+           (reduces CPU usage and avoids rapid alerts)
         */
         sleep(3);
 
         /*
-           Loop through all satellites stored in shared memory
+           Check all satellites
         */
         for(int i = 0; i < MAX_SAT; i++) {
 
             /*
-               Check if battery level of satellite is below threshold
-               (simulate anomaly detection)
+               If battery is below threshold AND
+               alert not already sent
             */
-            if(state->satellites[i].battery < 20) {
+            if(state->satellites[i].battery < 20 && !alert_sent[i]) {
 
                 /*
                    Set message type (required for message queue)
@@ -53,21 +79,31 @@ int main() {
                 alert.msg_type = 1;
 
                 /*
-                   Create alert message describing the problem
+                   Create alert message
                 */
-                sprintf(alert.msg_text,
-                        "Battery low in Satellite %d", i + 1);
+                sprintf(alert.msg_text, "Battery low in Satellite %d", i + 1);
 
                 /*
-                   Send alert message to the message queue
-                   This message will be received by the Fault Recovery process
+                   Send alert to Fault Recovery process
                 */
-                msgsnd(msgid, &alert,
-                       sizeof(alert.msg_text), 0);
+                if(msgsnd(msgid, &alert, sizeof(alert.msg_text), 0) < 0) {
+                    perror("msgsnd failed");
+                }
+
+                /*
+                   Mark alert as sent to avoid duplicates
+                */
+                alert_sent[i] = 1;
             }
+
+            /*
+               Reset alert flag if battery recovers
+               (so future alerts can be sent again)
+            */
+            if(state->satellites[i].battery >= 20)
+                alert_sent[i] = 0;
         }
     }
 
-    
     return 0;
 }
