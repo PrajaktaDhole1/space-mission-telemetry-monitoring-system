@@ -10,4 +10,4 @@ run:
 	./commander
 	
 clean:
-	rm -f commander satellite receiver analyzer recovery reorder mission_log.txt
+	rm -f commander satellite receiver analyzer recovery recorder mission_log.txt
